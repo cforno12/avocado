@@ -108,7 +108,7 @@ def find_command(cmd, default=None, check_exec=True, session=None):
             if check_exec:
                 if session.cmd("test -x %s" % cmd_path).exit_status != 0 or session.cmd("test -r %s" % cmd_path).exit_status != 0:
                     continue
-            return session.cmd("which %s" % cmd_path).stdout_text.rstrip()
+            return session.cmd("realpath %s" % cmd_path).stdout_text.rstrip()
         elif os.path.isfile(cmd_path):
             if check_exec:
                 if not os.access(cmd_path, os.R_OK | os.X_OK):
