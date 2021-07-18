@@ -13,7 +13,6 @@ log = logging.getLogger('avocado.utils.software_manager')
 
 
 class DpkgBackend(BaseBackend):
-
     """
     This class implements operations executed with the dpkg package manager.
 
@@ -24,16 +23,25 @@ class DpkgBackend(BaseBackend):
     PACKAGE_TYPE = 'deb'
     INSTALLED_OUTPUT = 'install ok installed'
 
-    def __init__(self):
-        self.lowlevel_base_cmd = utils_path.find_command('dpkg')
+    def __init__(self, session=None):
+        self.lowlevel_base_cmd = utils_path.find_command('dpkg', session)
+        self.session = session
 
     def check_installed(self, name):
-        if os.path.isfile(name):
+        if self.session:
+            if self.session.cmd('test -f %s' % name).exit_status == 0:
+                n_cmd = self.lowlevel_base_cmd + ' -f ' + name + ' Package'
+                name = self.session.cmd(n_cmd).stdout_text
+        elif os.path.isfile(name):
             n_cmd = self.lowlevel_base_cmd + ' -f ' + name + ' Package'
             name = process.system_output(n_cmd)
         i_cmd = self.lowlevel_base_cmd + " -s " + name
         # Checking if package is installed
-        package_status = process.run(i_cmd, ignore_status=True).stdout_text
+        if self.session:
+            package_status = self.session.cmd(i_cmd,
+                                              ignore_status=True).stdout_text
+        else:
+            package_status = process.run(i_cmd, ignore_status=True).stdout_text
         dpkg_installed = (self.INSTALLED_OUTPUT in package_status)
         if dpkg_installed:
             return True
@@ -46,7 +54,10 @@ class DpkgBackend(BaseBackend):
         """
         log.debug("Listing all system packages (may take a while)")
         installed_packages = []
-        cmd_result = process.run('dpkg -l', verbose=False)
+        if self.session:
+            cmd_result = self.session.cmd('dpkg -l')
+        else:
+            cmd_result = process.run('dpkg -l', verbose=False)
         out = cmd_result.stdout_text.strip()
         raw_list = out.splitlines()[5:]
         for line in raw_list:
@@ -63,11 +74,19 @@ class DpkgBackend(BaseBackend):
         :returns: True if valid, otherwise false.
         :rtype: bool
         """
-        abs_path = os.path.abspath(os.path.expanduser((package_path)))
-        member_regexes = [r'debian-binary',
-                          r'control\.tar\..*',
-                          r'data\.tar\..*']
-        members = ar.Ar(abs_path).list()
+        if self.session:
+            abs_path = self.session.cmd('realpath %s' %
+                                        package_path).stdout_text
+        else:
+            abs_path = os.path.abspath(os.path.expanduser((package_path)))
+        member_regexes = [
+            r'debian-binary', r'control\.tar\..*', r'data\.tar\..*'
+        ]
+        if self.session:
+            members = self.session.cmd('ar t %s' %
+                                       abs_path).stdout_text.split('/n')
+        else:
+            members = ar.Ar(abs_path).list()
         if len(members) != len(member_regexes):
             return False
         for regex, member in zip(member_regexes, members):
@@ -86,14 +105,33 @@ class DpkgBackend(BaseBackend):
         :returns: the path of the extracted files.
         :rtype: str
         """
-        abs_path = os.path.abspath(os.path.expanduser(package_path))
-        dest = dest_path or os.path.curdir
-        os.makedirs(dest, exist_ok=True)
-        archive = ar.Ar(abs_path)
+        if self.session:
+            abs_path = self.session.cmd('realpath %s' %
+                                        package_path).stdout_text
+            dest = dest_path or self.session.cmd('pwd').stdout_text
+            self.session.cmd('mkdir -p %s' % dest)
+            source = '%s:%s' % (self.session.host, abs_path)
+            self.session.copy_file(source, '/tmp/')
+            local_package_path = '/tmp/' + source.split('/')[-1]
+            archive = ar.Ar(local_package_path)
+        else:
+            abs_path = os.path.abspath(os.path.expanduser(package_path))
+            dest = dest_path or os.path.curdir
+            os.makedirs(dest, exist_ok=True)
+            archive = ar.Ar(abs_path)
+
         data_tarball_name = archive.list()[2]
         member_data = archive.read_member(data_tarball_name)
         tarball = tarfile.open(fileobj=io.BytesIO(member_data))
-        tarball.extractall(dest)
+
+        if self.session:
+            tmp_src = '/tmp/extract_dest/'
+            os.makedirs(tmp_src, exist_ok=True)
+            tarball.extractall(tmp_src)
+            self.session.copy_file(tmp_src, dest, recursive=True)
+        else:
+            tarball.extractall(dest)
+
         return dest
 
     def list_files(self, package):
@@ -103,8 +141,17 @@ class DpkgBackend(BaseBackend):
         :param package: Package name.
         :return: List of paths installed by package.
         """
-        if os.path.isfile(package):
+        if self.session:
+            if self.session.cmd('test -f %s' % package):
+                l_cmd = self.lowlevel_base_cmd + ' -c ' + package
+            else:
+                l_cmd = self.lowlevel_base_cmd + ' -l ' + package
+
+            return self.session.cmd(l_cmd).stdout_text.split('\n')
+
+        elif os.path.isfile(package):
             l_cmd = self.lowlevel_base_cmd + ' -c ' + package
         else:
             l_cmd = self.lowlevel_base_cmd + ' -l ' + package
+
         return process.system_output(l_cmd).split('\n')

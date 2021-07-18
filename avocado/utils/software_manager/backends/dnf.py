@@ -14,11 +14,11 @@ class DnfBackend(YumBackend):
     DNF is the successor to yum in recent Fedora.
     """
 
-    def __init__(self):
+    def __init__(self, session=None):
         """
         Initializes the base command and the DNF package repository.
         """
-        super(DnfBackend, self).__init__(cmd='dnf')
+        super(DnfBackend, self).__init__(cmd='dnf', session=session)
 
     def build_dep(self, name):
         """
@@ -29,8 +29,11 @@ class DnfBackend(YumBackend):
         :return True: If build dependencies are installed properly
         """
         try:
-            process.system('%s builddep %s' % (self.base_command, name),
-                           sudo=True)
+            cmd = '%s builddep %s' % (self.base_command, name)
+            if self.session:
+                self.session.cmd("sudo %s" % cmd)
+            else:
+                process.system(cmd, sudo=True)
             return True
         except process.CmdError as details:
             log.error(details)

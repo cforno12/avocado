@@ -33,29 +33,36 @@ class YumBackend(RpmBackend):
 
     #: Path to the repository managed by Avocado
     REPO_FILE_PATH = '/etc/yum.repos.d/avocado-managed.repo'
+    REMOTE_REPO_FILE_PATH = '/tmp/avocado-managed.repo'
 
-    def __init__(self, cmd='yum'):
+    def __init__(self, cmd='yum', session=None):
         """
         Initializes the base command and the yum package repository.
         """
-        super(YumBackend, self).__init__()
+        super(YumBackend, self).__init__(session=session)
         self.cmd = cmd
-        self.base_command = '%s -y ' % utils_path.find_command(cmd)
+        self.base_command = '%s -y ' % utils_path.find_command(cmd, session=session)
         self._cfgparser = None
         self._set_version(cmd)
         self._yum_base = None
+        self.session = session
 
     @property
     def repo_config_parser(self):
         if self._cfgparser is None:
             self._cfgparser = configparser.ConfigParser()
-            self._cfgparser.read(self.REPO_FILE_PATH)
+            if self.session:
+                # repo file is stored locally in /tmp and it is copied when modified
+                self._cfgparser.read(self.REMOTE_REPO_FILE_PATH)
+                self.session.copy_files(self.REMOTE_REPO_FILE_PATH, self.REPO_FILE_PATH)
+            else:
+                self._cfgparser.read(self.REPO_FILE_PATH)
         return self._cfgparser
 
     @property
     def yum_base(self):
         if self._yum_base is None:
-            if HAS_YUM_MODULE:
+            if HAS_YUM_MODULE and not self.session:
                 self._yum_base = yum.YumBase()
             else:
                 log.debug("%s module for Python is required to use the "
@@ -71,9 +78,13 @@ class YumBackend(RpmBackend):
         process.system("yum clean all", sudo=True)
 
     def _set_version(self, cmd):
-        result = process.run(self.base_command + '--version',
-                             verbose=False,
-                             ignore_status=True)
+        if self.session:
+            result = self.session.cmd("%s --version" % self.base_command,
+                                      ignore_status=True)
+        else:
+            result = process.run(self.base_command + '--version',
+                                 verbose=False,
+                                 ignore_status=True)
         first_line = result.stdout_text.splitlines()[0].strip()
         try:
             ver = re.findall(r'\d*.\d*.\d*', first_line)[0]
@@ -89,7 +100,10 @@ class YumBackend(RpmBackend):
         i_cmd = self.base_command + 'install' + ' ' + name
 
         try:
-            process.system(i_cmd, sudo=True)
+            if self.session:
+                self.session.cmd("sudo %s" % i_cmd)
+            else:
+                process.system(i_cmd, sudo=True)
             return True
         except process.CmdError:
             return False
@@ -102,7 +116,10 @@ class YumBackend(RpmBackend):
         """
         r_cmd = self.base_command + 'erase' + ' ' + name
         try:
-            process.system(r_cmd, sudo=True)
+            if self.session:
+                self.session.cmd("sudo %s" % r_cmd)
+            else:
+                process.system(r_cmd, sudo=True)
             return True
         except process.CmdError:
             return False
@@ -135,10 +152,14 @@ class YumBackend(RpmBackend):
             prefix = 'avocado_software_manager'
             with tempfile.NamedTemporaryFile("w", prefix=prefix) as tmp_file:
                 self.repo_config_parser.write(tmp_file)
-                tmp_file.flush()    # Sync the content
-                process.system('cp %s %s'
-                               % (tmp_file.name, self.REPO_FILE_PATH),
-                               sudo=True)
+                tmp_file.flush()
+                # Sync the content
+                if self.session:
+                    self.session.copy_file(tmp_file.name, self.REPO_FILE_PATH)
+                else:
+                    process.system('cp %s %s'
+                                   % (tmp_file.name, self.REPO_FILE_PATH),
+                                   sudo=True)
             return True
         except (OSError, process.CmdError) as details:
             log.error(details)
@@ -159,9 +180,12 @@ class YumBackend(RpmBackend):
                             self.repo_config_parser.remove_section(section)
                 self.repo_config_parser.write(tmp_file.file)
                 tmp_file.flush()    # Sync the content
-                process.system('cp %s %s'
-                               % (tmp_file.name, self.REPO_FILE_PATH),
-                               sudo=True)
+                if self.session:
+                    self.session.copy_file(tmp_file.name, self.REPO_FILE_PATH)
+                else:
+                    process.system('cp %s %s'
+                                   % (tmp_file.name, self.REPO_FILE_PATH),
+                                   sudo=True)
                 return True
         except (OSError, process.CmdError) as details:
             log.error(details)
@@ -182,7 +206,10 @@ class YumBackend(RpmBackend):
             r_cmd = self.base_command + 'update' + ' ' + name
 
         try:
-            process.system(r_cmd, sudo=True)
+            if self.session:
+                self.session.cmd("sudo %s" % r_cmd)
+            else:
+                process.system(r_cmd, sudo=True)
             return True
         except process.CmdError:
             return False
@@ -221,9 +248,12 @@ class YumBackend(RpmBackend):
 
         :return True: If build dependencies are installed properly
         """
-
+        cmd = 'yum-builddep -y --tolerant %s' % name
         try:
-            process.system('yum-builddep -y --tolerant %s' % name, sudo=True)
+            if self.session:
+                self.session.cmd("sudo %s" % cmd)
+            else:
+                process.system(cmd, sudo=True)
             return True
         except process.CmdError as details:
             log.error(details)
@@ -252,8 +282,11 @@ class YumBackend(RpmBackend):
                                   " '%s' could not be installed", pkg)
                         return ""
             try:
-                process.run('yumdownloader --assumeyes --verbose --source %s '
-                            '--destdir %s' % (name, path))
+                cmd = 'yumdownloader --assumeyes --verbose --source %s --destdir %s' % (name, path)
+                if self.session:
+                    self.session.cmd(cmd)
+                else:
+                    process.run(cmd)
                 src_rpms = [_ for _ in next(os.walk(path))[2]
                             if _.endswith(".src.rpm")]
                 if len(src_rpms) != 1:

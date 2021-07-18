@@ -74,7 +74,7 @@ def init_dir(*args):
     return directory
 
 
-def find_command(cmd, default=None, check_exec=True):
+def find_command(cmd, default=None, check_exec=True, session=None):
     """
     Try to find a command in the PATH, paranoid version.
 
@@ -93,14 +93,23 @@ def find_command(cmd, default=None, check_exec=True):
     common_bin_paths = ["/usr/libexec", "/usr/local/sbin", "/usr/local/bin",
                         "/usr/sbin", "/usr/bin", "/sbin", "/bin"]
     try:
-        path_paths = os.environ['PATH'].split(":")
+        path_paths = None
+        if session:
+            path_paths = session.cmd("echo $PATH").stdout_text.split(":")
+        else:
+            path_paths = os.environ['PATH'].split(":")
     except IndexError:
         path_paths = []
     path_paths = list(set(common_bin_paths + path_paths))
 
     for dir_path in path_paths:
         cmd_path = os.path.join(dir_path, cmd)
-        if os.path.isfile(cmd_path):
+        if session and session.cmd("test -f %s" % cmd_path).exit_status == 0:
+            if check_exec:
+                if session.cmd("test -x %s" % cmd_path).exit_status != 0 or session.cmd("test -r %s" % cmd_path).exit_status != 0:
+                    continue
+            return session.cmd("realpath %s" % cmd_path).stdout_text.rstrip()
+        elif os.path.isfile(cmd_path):
             if check_exec:
                 if not os.access(cmd_path, os.R_OK | os.X_OK):
                     continue
